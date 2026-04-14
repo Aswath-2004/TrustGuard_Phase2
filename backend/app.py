@@ -26,7 +26,7 @@ from cryptography.fernet import Fernet, InvalidToken
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-import google.generativeai as genai
+from google import genai
 from langchain_community.utilities import GoogleSearchAPIWrapper
 from langchain_community.retrievers import WikipediaRetriever, ArxivRetriever
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -1947,6 +1947,9 @@ def scan_text():
 
     return jsonify({"pii_detected": detected, "entities": real_pii})
 
+@app.route("/")
+def home():
+    return "TrustGuard API is running 🚀"
 
 # ============================================================
 if __name__ == '__main__':
