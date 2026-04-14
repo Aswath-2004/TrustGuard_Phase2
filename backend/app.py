@@ -26,7 +26,7 @@ from cryptography.fernet import Fernet, InvalidToken
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-from google import genai
+import google.generativeai as genai
 from langchain_community.utilities import GoogleSearchAPIWrapper
 from langchain_community.retrievers import WikipediaRetriever, ArxivRetriever
 from langchain_google_genai import ChatGoogleGenerativeAI
