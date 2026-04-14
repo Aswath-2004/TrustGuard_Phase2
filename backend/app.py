@@ -44,7 +44,15 @@ ENCRYPTION_KEY  = os.getenv("ENCRYPTION_KEY")
 SECRET_KEY      = os.getenv("SECRET_KEY", "trustguard-secret-2025")
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+ALLOWED_ORIGINS = [
+    "https://trust-guard-phase2.vercel.app",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}},
+     supports_credentials=True,
+     allow_headers=["Content-Type", "Authorization"],
+     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
 
 
 # ============================================================
@@ -1845,7 +1853,7 @@ Correction/Refinement: [Corrected version or N/A]
     }
 
     # Deep-link: http://localhost:3000/?verify=<uuid>  (or wherever the app runs)
-    deep_link = f"http://localhost:5173/?verify={verify_id}"
+    deep_link = f"https://trust-guard-phase2.vercel.app/?verify={verify_id}"
 
     print(f"✅ /verify done: pii={results['pii_info']['detected']} "
           f"hallucination={results['hallucination_info']['detected']} "
