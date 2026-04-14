@@ -27,3 +27,4 @@ __pycache__/
 backend/.env
 backend/firebase_credentials.json
 node_modules/
+dashboard/node_modules/

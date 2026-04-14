@@ -52,7 +52,19 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # ============================================================
 db = None
 if not firebase_admin._apps:
-    if os.path.exists("firebase_credentials.json"):
+    # Try env var first (production), then fall back to file (development)
+    _fb_creds_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
+    if _fb_creds_json:
+        try:
+            import json as _json
+            _creds_dict = _json.loads(_fb_creds_json)
+            cred = credentials.Certificate(_creds_dict)
+            firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            print("🔥 Firebase connected via env var!")
+        except Exception as e:
+            print(f"⚠️ Firebase env var error: {e}")
+    elif os.path.exists("firebase_credentials.json"):
         try:
             cred = credentials.Certificate("firebase_credentials.json")
             firebase_admin.initialize_app(cred)
@@ -61,7 +73,7 @@ if not firebase_admin._apps:
         except Exception as e:
             print(f"⚠️ Firebase error: {e}")
     else:
-        print("⚠️ firebase_credentials.json not found — in-memory mode.")
+        print("⚠️ No Firebase credentials — in-memory mode.")
 
 
 # ============================================================
@@ -385,7 +397,7 @@ PRIVATE_TYPES = {
 }
 
 provider   = NlpEngineProvider(nlp_configuration={
-    'nlp_engine_name':'spacy','models':[{'lang_code':'en','model_name':'en_core_web_lg'}]
+    'nlp_engine_name':'spacy','models':[{'lang_code':'en','model_name':'en_core_web_sm'}]
 })
 nlp_engine = provider.create_engine()
 analyzer   = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=["en"])
