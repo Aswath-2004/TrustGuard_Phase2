@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<style>
+* { box-sizing:border-box; margin:0; padding:0; }
+body {
+  width: 300px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: #0f0f12;
+  color: #e2e0ec;
+  font-size: 13px;
+}
+
+/* ── Header ── */
+.header {
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  display: flex; align-items: center; gap: 10px;
+}
+.logo {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: linear-gradient(135deg, #5c47e0, #7461f5);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; flex-shrink: 0;
+}
+.brand { font-size: 13.5px; font-weight: 700; }
+.brand-sub { font-size: 10.5px; color: #6b6880; margin-top: 1px; }
+
+/* ── Body sections ── */
+.body { padding: 14px 16px; }
+.section { margin-bottom: 16px; }
+.section:last-child { margin-bottom: 0; }
+
+/* ── Account card ── */
+.account-card {
+  padding: 11px 13px; border-radius: 10px;
+  border: 1.5px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.03);
+  display: flex; align-items: center; gap: 10px;
+  min-height: 52px;
+}
+.account-card.linked {
+  border-color: rgba(30,169,124,0.3);
+  background: rgba(30,169,124,0.07);
+}
+.account-card.error {
+  border-color: rgba(224,75,58,0.3);
+  background: rgba(224,75,58,0.07);
+}
+.acct-avatar {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: linear-gradient(135deg, #5c47e0, #7461f5);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 700; color: #fff;
+  flex-shrink: 0;
+}
+.acct-avatar.anon {
+  background: rgba(255,255,255,0.06);
+  font-size: 18px;
+}
+.acct-name { font-size: 13px; font-weight: 600; color: #e2e0ec; }
+.acct-sub  { font-size: 11px; color: #6b6880; margin-top: 2px; }
+.acct-ok   { color: #1ea97c; }
+.acct-err  { color: #e04b3a; }
+
+/* ── Label ── */
+label {
+  display: block;
+  font-size: 10.5px; font-weight: 700; color: #6b6880;
+  text-transform: uppercase; letter-spacing: .5px;
+  margin-bottom: 7px;
+}
+
+/* ── Token input row ── */
+.token-row { display: flex; gap: 6px; }
+input {
+  flex: 1; padding: 9px 11px;
+  background: #1a1a1f;
+  border: 1.5px solid rgba(255,255,255,0.09);
+  border-radius: 8px;
+  color: #e2e0ec;
+  font-size: 12px; font-family: 'Courier New', monospace;
+  outline: none; transition: border-color .15s;
+}
+input:focus { border-color: rgba(92,71,224,.5); }
+input::placeholder { color: #4a4760; font-family: inherit; font-style: italic; }
+
+/* ── Buttons ── */
+.btn {
+  padding: 9px 14px; border: none; border-radius: 8px;
+  font-family: inherit; font-size: 12px; font-weight: 700;
+  cursor: pointer; transition: opacity .15s; white-space: nowrap;
+}
+.btn-primary { background: #5c47e0; color: #fff; }
+.btn-primary:hover { opacity: .85; }
+.btn-primary:disabled { opacity: .4; cursor: default; }
+
+.btn-full {
+  width: 100%; padding: 10px;
+  background: transparent;
+  border: 1.5px solid rgba(255,255,255,0.1);
+  border-radius: 9px; color: #8a879f;
+  font-size: 12.5px; font-weight: 600;
+  cursor: pointer; transition: all .15s;
+  font-family: inherit; display: flex;
+  align-items: center; justify-content: center; gap: 7px;
+}
+.btn-full:hover { color: #e2e0ec; border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.04); }
+
+/* ── Divider ── */
+.divider { height: 1px; background: rgba(255,255,255,0.06); margin: 14px 0; }
+
+/* ── Hint ── */
+.hint { font-size: 11px; color: #4a4760; line-height: 1.55; margin-top: 7px; }
+.hint code {
+  background: rgba(255,255,255,0.06); padding: 1px 5px;
+  border-radius: 4px; font-size: 10.5px; color: #8a879f;
+}
+
+/* ── Toast ── */
+.toast {
+  margin-top: 8px; padding: 7px 10px; border-radius: 7px;
+  font-size: 11.5px; font-weight: 600; display: none;
+  align-items: center; gap: 6px;
+}
+.toast.ok   { background: rgba(30,169,124,.12); color: #1ea97c; border: 1px solid rgba(30,169,124,.2); }
+.toast.err  { background: rgba(224,75,58,.12);  color: #e04b3a; border: 1px solid rgba(224,75,58,.2);  }
+
+/* ── Sites pill row ── */
+.sites { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 14px; }
+.pill {
+  padding: 3px 10px; border-radius: 20px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.07);
+  font-size: 11px; color: #8a879f;
+}
+
+/* ── Spinner ── */
+.spin {
+  width: 12px; height: 12px;
+  border: 1.5px solid rgba(92,71,224,.3);
+  border-top-color: #7461f5; border-radius: 50%;
+  animation: spin .7s linear infinite; flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">🛡️</div>
+  <div>
+    <div class="brand">TrustGuard Verifier</div>
+    <div class="brand-sub">v2.2 · AI Safety Extension</div>
+  </div>
+</div>
+
+<div class="body">
+
+  <!-- Active on these sites -->
+  <div class="section">
+    <label>Active on</label>
+    <div class="sites">
+      <span class="pill">🤖 ChatGPT</span>
+      <span class="pill">✨ Gemini</span>
+      <span class="pill">🟠 Claude</span>
+    </div>
+  </div>
+
+  <!-- Linked account card -->
+  <div class="section">
+    <label>Linked Account</label>
+    <div class="account-card" id="acct-card">
+      <div class="acct-avatar anon" id="acct-avatar">👤</div>
+      <div>
+        <div class="acct-name" id="acct-name">Not linked</div>
+        <div class="acct-sub" id="acct-sub">Scans run as anonymous</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Token input -->
+  <div class="section">
+    <label>Session Token</label>
+    <div class="token-row">
+      <input type="password" id="token-input"
+        placeholder="Paste from TrustGuard…"/>
+      <button class="btn btn-primary" id="save-btn">Link</button>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <p class="hint">
+      In TrustGuard: press <code>F12</code> → Console → type
+      <code>localStorage.getItem('tg_user')</code> → copy the
+      <code>sessionToken</code> value and paste it above.
+    </p>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- Open dashboard -->
+  <button class="btn-full" id="open-btn">
+    🛡️ Open TrustGuard Dashboard
+  </button>
+
+</div>
+
+<script>
+const API    = "http://127.0.0.1:5000";
+const APP    = "http://localhost:3000";
+
+// ── Toast helper ──────────────────────────────────────────────
+function showToast(msg, type = "ok") {
+  const t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = `toast ${type}`;
+  t.style.display = "flex";
+  setTimeout(() => { t.style.display = "none"; }, 4000);
+}
+
+// ── Verify token with backend and update UI ───────────────────
+async function verifyAndDisplayToken(token) {
+  const card   = document.getElementById("acct-card");
+  const avatar = document.getElementById("acct-avatar");
+  const name   = document.getElementById("acct-name");
+  const sub    = document.getElementById("acct-sub");
+
+  // Show loading state
+  card.className = "account-card";
+  avatar.className = "acct-avatar anon";
+  avatar.textContent = "⏳";
+  name.textContent = "Verifying…";
+  sub.textContent = "";
+
+  if (!token) {
+    avatar.textContent = "👤";
+    avatar.className = "acct-avatar anon";
+    name.textContent = "Not linked";
+    sub.innerHTML = `<span class="acct-sub">Scans run as anonymous</span>`;
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API}/api/auth/token-verify`, {
+      headers: { "Authorization": `Bearer ${token}` }
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const initials = (data.name || data.email || "?").slice(0, 2).toUpperCase();
+      card.className = "account-card linked";
+      avatar.className = "acct-avatar";
+      avatar.textContent = initials;
+      name.textContent = data.name || data.email;
+      sub.innerHTML = `<span class="acct-ok">✓ Linked</span> · ${data.role || "User"}`;
+    } else {
+      const err = await res.json().catch(() => ({}));
+      card.className = "account-card error";
+      avatar.className = "acct-avatar anon";
+      avatar.textContent = "✗";
+      name.textContent = "Token invalid";
+      sub.innerHTML = `<span class="acct-err">${err.error || "Not found — log into TrustGuard first"}</span>`;
+    }
+  } catch (e) {
+    card.className = "account-card error";
+    avatar.className = "acct-avatar anon";
+    avatar.textContent = "⚠️";
+    name.textContent = "Backend offline";
+    sub.innerHTML = `<span class="acct-err">Make sure Flask is running on port 5000</span>`;
+  }
+}
+
+// ── On popup open — load saved token and verify it ────────────
+document.addEventListener("DOMContentLoaded", () => {
+  chrome.storage.local.get(["tg_token"], (result) => {
+    const saved = result.tg_token || "";
+    if (saved) {
+      document.getElementById("token-input").value = saved;
+      verifyAndDisplayToken(saved);
+    } else {
+      verifyAndDisplayToken(null);
+    }
+  });
+});
+
+// ── Save / Link button ────────────────────────────────────────
+document.getElementById("save-btn").addEventListener("click", async () => {
+  const token = document.getElementById("token-input").value.trim();
+  const btn   = document.getElementById("save-btn");
+
+  if (!token) {
+    showToast("⚠ Paste a token first", "err");
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = `<div class="spin"></div>`;
+
+  // Save to chrome.storage (content script listens for changes)
+  chrome.storage.local.set({ tg_token: token }, async () => {
+    // Verify it live with backend
+    await verifyAndDisplayToken(token);
+
+    const card = document.getElementById("acct-card");
+    if (card.classList.contains("linked")) {
+      showToast("✓ Account linked — extension scans are now attributed to your account", "ok");
+    } else {
+      showToast("Token saved but could not verify — check Flask is running", "err");
+    }
+
+    btn.disabled = false;
+    btn.textContent = "Link";
+  });
+});
+
+// ── Open TrustGuard ───────────────────────────────────────────
+document.getElementById("open-btn").addEventListener("click", () => {
+  chrome.tabs.create({ url: APP });
+});
+</script>
+</body>
+</html>

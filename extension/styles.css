@@ -1,0 +1,131 @@
+/* ── TrustGuard Extension Styles v2.2 ── */
+
+/* ── Status badge (fixed bottom-right) ── */
+#tg-badge {
+  position: fixed;
+  bottom: 22px;
+  right: 22px;
+  padding: 9px 16px 9px 12px;
+  background: rgba(15, 15, 18, 0.93);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #c8c5d8;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: 28px;
+  border: 1px solid rgba(255,255,255,0.08);
+  z-index: 2147483647;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+  letter-spacing: 0.1px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.3s ease;
+  max-width: 340px;
+  pointer-events: auto;
+}
+
+#tg-badge:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+}
+
+.tg-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6b7280;
+  flex-shrink: 0;
+  transition: background 0.3s ease;
+}
+
+.tg-label { pointer-events: none; }
+
+/* Badge states */
+#tg-badge.scanning { background: rgba(30, 28, 10, 0.95); border-color: rgba(208,138,42,.25); }
+#tg-badge.scanning .tg-dot { background: #d08a2a; animation: tg-pulse 1s ease infinite; }
+#tg-badge.safe     { background: rgba(5, 28, 18, 0.95);  border-color: rgba(30,169,124,.25); }
+#tg-badge.safe     .tg-dot { background: #1ea97c; }
+#tg-badge.risk     { background: rgba(38, 8, 5, 0.95);   border-color: rgba(224,75,58,.25); }
+#tg-badge.risk     .tg-dot { background: #e04b3a; animation: tg-pulse 1.5s ease infinite; }
+#tg-badge.pii      { background: rgba(28, 10, 46, 0.95); border-color: rgba(124,58,237,.25); }
+#tg-badge.pii      .tg-dot { background: #7c3aed; animation: tg-pulse 1.2s ease infinite; }
+
+/* ── Button row appended to each bot message ── */
+.tg-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(128,128,128,0.1);
+  flex-wrap: wrap;
+  animation: tg-fadein 0.3s ease forwards;
+}
+
+/* ── Verify button ── */
+.tg-verify-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 13px;
+  background: transparent;
+  border: 1.5px solid rgba(92, 71, 224, 0.4);
+  border-radius: 22px;
+  color: #7461f5;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  line-height: 1;
+  outline: none;
+  letter-spacing: 0.1px;
+}
+
+.tg-verify-btn:hover {
+  background: rgba(92, 71, 224, 0.1);
+  border-color: rgba(92, 71, 224, 0.7);
+  transform: translateY(-1px);
+}
+
+.tg-verify-btn:active { transform: translateY(0); }
+
+.tg-verify-btn.loading {
+  opacity: 0.65;
+  pointer-events: none;
+  border-color: rgba(128,128,128,0.25);
+  color: #9ca3af;
+}
+
+/* Result state colours */
+.tg-verify-btn.tg-safe  { border-color: rgba(30,169,124,.5);  color: #1ea97c; }
+.tg-verify-btn.tg-safe:hover  { background: rgba(30,169,124,.08); }
+.tg-verify-btn.tg-warn  { border-color: rgba(224,75,58,.5);   color: #e04b3a; }
+.tg-verify-btn.tg-warn:hover  { background: rgba(224,75,58,.08); }
+.tg-verify-btn.tg-pii   { border-color: rgba(208,138,42,.5);  color: #d08a2a; }
+.tg-verify-btn.tg-pii:hover   { background: rgba(208,138,42,.08); }
+.tg-verify-btn.tg-error { border-color: rgba(128,128,128,.3); color: #9ca3af; }
+
+/* Loading spinner inside button */
+.tg-spin {
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid rgba(128,128,128,0.25);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: tg-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+/* ── Animations ── */
+@keyframes tg-spin  { to { transform: rotate(360deg); } }
+@keyframes tg-pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+@keyframes tg-fadein {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

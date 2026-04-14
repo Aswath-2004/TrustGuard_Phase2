@@ -1,0 +1,29 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Env files
+.env
+firebase_credentials.json
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+.venv/
+backend/firebase_credentials.json
+firebase_credentials.json
+.env
+
+.venv/
+env/
+__pycache__/
+*.pyc
+backend/.env
+backend/firebase_credentials.json
+node_modules/
