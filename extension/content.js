@@ -11,8 +11,8 @@
 console.log("🛡️ TrustGuard v2.2 loaded on:", window.location.hostname);
 
 // ─── CONFIG ──────────────────────────────────────────────────
-const API_BASE = "http://127.0.0.1:5000";
-const TRUSTGUARD_URL = "http://localhost:3000";
+const API_BASE = "https://trustguard-api.onrender.com";
+const TRUSTGUARD_URL = "https://trustguard.vercel.app";
 const VERIFY_URL = `${API_BASE}/verify`;
 const SCAN_URL = `${API_BASE}/scan`;
 

@@ -5,9 +5,8 @@
   "description": "One-click verification of AI responses for hallucinations and PII",
   "permissions": ["activeTab", "storage"],
   "host_permissions": [
-    "http://127.0.0.1:5000/*",
-    "http://localhost:5173/*",
-    "http://localhost:3000/*"
+    "https://trustguard-api.onrender.com/*",
+    "https://trustguard.vercel.app/*"
   ],
   "content_scripts": [
     {
