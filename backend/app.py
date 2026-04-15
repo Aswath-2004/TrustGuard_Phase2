@@ -45,9 +45,8 @@ SECRET_KEY      = os.getenv("SECRET_KEY", "trustguard-secret-2025")
 
 app = Flask(__name__)
 ALLOWED_ORIGINS = [
+    "https://trustguard.vercel.app",
     "https://trust-guard-phase2.vercel.app",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
 ]
 CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}},
      supports_credentials=True,
