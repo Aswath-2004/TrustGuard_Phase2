@@ -45,14 +45,12 @@ SECRET_KEY      = os.getenv("SECRET_KEY", "trustguard-secret-2025")
 
 app = Flask(__name__)
 
-# ── CORS ──────────────────────────────────────────────────────
-_raw_origins = os.getenv("FRONTEND_URL", "")
-if _raw_origins and _raw_origins != "*":
-    _allowed = [o.strip().rstrip("/") for o in _raw_origins.split(",") if o.strip()]
-else:
-    _allowed = []
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# ALLOWED_ORIGINS: hardcoded list of every origin that must be permitted.
+# The after_request hook below injects headers on EVERY response so no
+# flask_cors configuration issue can block the frontend.
 
-ALLOWED_ORIGINS = _allowed + [
+ALLOWED_ORIGINS = [
     "https://trust-guard-phase2.vercel.app",
     "https://trustguard.vercel.app",
     "http://localhost:5173",
@@ -61,11 +59,56 @@ ALLOWED_ORIGINS = _allowed + [
     "http://127.0.0.1:3000",
 ]
 
+# Also accept any URL set via FRONTEND_URL env var (comma-separated)
+_env_origins = os.getenv("FRONTEND_URL", "")
+for _o in _env_origins.split(","):
+    _o = _o.strip().rstrip("/")
+    if _o and _o not in ALLOWED_ORIGINS:
+        ALLOWED_ORIGINS.append(_o)
+
+# flask_cors as base layer
 CORS(app,
      resources={r"/*": {"origins": ALLOWED_ORIGINS}},
      supports_credentials=True,
      allow_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+
+@app.after_request
+def _add_cors_headers(response):
+    """
+    Nuclear CORS override — runs after EVERY response.
+    Reads the request Origin, and if it is in ALLOWED_ORIGINS,
+    sets all necessary CORS headers directly on the response.
+    This guarantees headers are present even if flask_cors misses them.
+    """
+    origin = request.headers.get("Origin", "")
+    if origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"]      = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"]     = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Methods"]     = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Max-Age"]           = "86400"
+    return response
+
+@app.before_request
+def _handle_options():
+    """
+    Catch ALL OPTIONS preflight requests here — before any route runs.
+    Returns 200 immediately with correct CORS headers so the browser
+    can proceed with the actual POST/GET.
+    """
+    if request.method == "OPTIONS":
+        origin = request.headers.get("Origin", "")
+        if origin in ALLOWED_ORIGINS:
+            resp = app.make_response("")
+            resp.status_code = 200
+            resp.headers["Access-Control-Allow-Origin"]      = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Headers"]     = "Content-Type, Authorization"
+            resp.headers["Access-Control-Allow-Methods"]     = "GET, POST, PUT, DELETE, OPTIONS"
+            resp.headers["Access-Control-Max-Age"]           = "86400"
+            return resp
+        return app.make_response(""), 204
 
 
 # ============================================================
@@ -73,48 +116,49 @@ CORS(app,
 # ============================================================
 db = None
 if not firebase_admin._apps:
-    # ── Priority 1: env var (Render / production) ──────────────
-    _fb_creds_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
-    if _fb_creds_json:
-        try:
-            _creds_dict = json.loads(_fb_creds_json)
-            cred = credentials.Certificate(_creds_dict)
-            firebase_admin.initialize_app(cred)
-            db = firestore.client()
-            print("🔥 Firebase connected via FIREBASE_CREDENTIALS_JSON env var!")
-        except Exception as e:
-            print(f"⚠️ Firebase env var error: {e}")
-    # ── Priority 2: local file (development) ──────────────────
-    elif os.path.exists("firebase_credentials.json"):
+    if os.path.exists("firebase_credentials.json"):
         try:
             cred = credentials.Certificate("firebase_credentials.json")
             firebase_admin.initialize_app(cred)
             db = firestore.client()
-            print("🔥 Firebase connected via firebase_credentials.json!")
+            print("🔥 Firebase connected (Firestore)!")
         except Exception as e:
-            print(f"⚠️ Firebase file error: {e}")
+            print(f"⚠️ Firebase error: {e}")
     else:
-        print("⚠️ No Firebase credentials found — running in in-memory mode.")
-        print("   Set FIREBASE_CREDENTIALS_JSON env var on Render to enable Firestore.")
+        print("⚠️ firebase_credentials.json not found — in-memory mode.")
 
 
 # ============================================================
-# GLOBAL / IN-MEMORY STATE
+# GLOBAL / IN-MEMORY STATE  (used when Firebase is absent)
 # ============================================================
-USER_SCAN_LOGS   = defaultdict(lambda: deque(maxlen=200))
-USER_STATS       = defaultdict(lambda: {
+# Per-user in-memory logs keyed by uid
+USER_SCAN_LOGS  = defaultdict(lambda: deque(maxlen=200))
+USER_STATS      = defaultdict(lambda: {
     "total_scans":0,"pii_blocked":0,"hallucinations_found":0,
     "verified_safe":0,"blocked_requests":0,"top_pii_types":{},
 })
+# For the admin / global view (no Firebase)
 GLOBAL_SCAN_LOGS = deque(maxlen=500)
-SESSIONS         = {}
-AUDIT_LOG        = deque(maxlen=500)
-RATE_LIMIT       = defaultdict(list)
-USER_PREFS_CACHE: dict = {}
-MEMORY_CACHE:     dict = {}
-VERIFY_STORE:     dict = {}
-MEMORY_LIMIT = 50
 
+SESSIONS    = {}
+AUDIT_LOG   = deque(maxlen=500)
+RATE_LIMIT  = defaultdict(list)
+
+# In-memory personalization store — used when Firestore is absent OR as a
+# write-through cache so _get_user_prefs never needs a Firestore read during chat
+USER_PREFS_CACHE: dict = {}   # { uid: { nickname, occupation, ... } }
+
+# In-memory memory cache — mirrors users/{uid}/memories in Firestore
+# { uid: [ { id, text, created_at, ts_unix }, ... ] }
+MEMORY_CACHE: dict = {}
+
+MEMORY_LIMIT = 50   # max memories per user (like ChatGPT's cap)
+
+# Temporary store for extension verify results (TTL not enforced — small memory use)
+# { verify_id: { analysis, original_text, source, ... } }
+VERIFY_STORE: dict = {}
+
+# ── Live settings (loaded from Firestore on startup) ────────
 ACTIVE_SETTINGS = {
     "rag":          True,
     "urlCheck":     True,
@@ -129,11 +173,11 @@ if db:
         _doc = db.collection("system").document("settings").get()
         if _doc.exists:
             _saved = _doc.to_dict() or {}
-            _allowed_keys = {"rag","urlCheck","encryption","autoRedact","publicFigure","piiThreshold"}
+            _allowed = {"rag","urlCheck","encryption","autoRedact","publicFigure","piiThreshold"}
             for _k, _v in _saved.items():
-                if _k in _allowed_keys:
+                if _k in _allowed:
                     ACTIVE_SETTINGS[_k] = _v
-            print(f"⚙️  Settings loaded from Firestore: {ACTIVE_SETTINGS}")
+            print(f"⚙️  Settings loaded: {ACTIVE_SETTINGS}")
     except Exception as _e:
         print(f"⚠️  Settings load error: {_e}")
 
@@ -167,6 +211,7 @@ else:
 def is_encryption_on() -> bool:
     return bool(cipher_suite) and bool(ACTIVE_SETTINGS.get("encryption", True))
 
+
 def encrypt_data(text: str) -> str:
     if not is_encryption_on() or text is None:
         return text
@@ -174,20 +219,40 @@ def encrypt_data(text: str) -> str:
         return ""
     return cipher_suite.encrypt(text.encode()).decode()
 
+
 def decrypt_data(maybe_enc: str) -> str:
+    """
+    Attempt to decrypt a string if it looks like Fernet ciphertext.
+
+    Key design decisions:
+    - Always tries decryption if cipher_suite exists, even if the
+      is_encryption_on() setting is currently False. This handles the
+      case where messages were encrypted with a previous config and
+      the setting was later toggled off.
+    - If decryption fails (plaintext, different key, corrupt data),
+      silently returns the original value as-is.
+    - If cipher_suite is None (no ENCRYPTION_KEY set), returns as-is.
+    """
     if maybe_enc is None:
         return maybe_enc
     if maybe_enc == "":
         return ""
+    # No key available — return as-is (will show plaintext correctly,
+    # or raw ciphertext if data was encrypted with a different instance)
     if not cipher_suite:
         return maybe_enc
+    # Always attempt decryption — Fernet ciphertext always starts with "gAAAAA"
+    # If maybe_enc is already plaintext, decrypt() will raise InvalidToken
+    # and we fall through to returning the original value
     try:
         return cipher_suite.decrypt(maybe_enc.encode()).decode()
     except (InvalidToken, Exception):
         return maybe_enc
 
+
 def sha256_text(text: str) -> str:
     return hashlib.sha256((text or "").encode()).hexdigest()
+
 
 def hash_password(pw: str) -> str:
     return hashlib.sha256((pw + SECRET_KEY).encode()).hexdigest()
@@ -214,13 +279,20 @@ def is_rate_limited(ip: str) -> bool:
 # SESSION / UID HELPERS
 # ============================================================
 def get_uid_from_request() -> str:
+    """
+    Extract the logged-in user's UID from the Authorization header.
+    Falls back to 'anonymous' so old code keeps working.
+    The frontend sends:  Authorization: Bearer <session_token>
+    """
     auth = request.headers.get("Authorization", "")
     token = auth.replace("Bearer ", "").strip()
     if token and token in SESSIONS:
         return SESSIONS[token].get("uid") or SESSIONS[token].get("email") or "anonymous"
     return "anonymous"
 
+
 def _safe_uid(uid: str) -> str:
+    """Turn any uid/email into a safe Firestore document ID."""
     return re.sub(r'[^\w\-]', '_', uid)[:128] or "anonymous"
 
 
@@ -394,7 +466,7 @@ PRIVATE_TYPES = {
 }
 
 provider   = NlpEngineProvider(nlp_configuration={
-    'nlp_engine_name':'spacy','models':[{'lang_code':'en','model_name':'en_core_web_sm'}]
+    'nlp_engine_name':'spacy','models':[{'lang_code':'en','model_name':'en_core_web_lg'}]
 })
 nlp_engine = provider.create_engine()
 analyzer   = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=["en"])
@@ -509,10 +581,16 @@ def custom_redact_pii(text, pii_details, start_offset):
 # PER-USER FIRESTORE HELPERS
 # ============================================================
 def _user_ref(uid: str):
+    """Return Firestore document reference for this user."""
     return db.collection("users").document(_safe_uid(uid))
 
 def write_chat_message(role: str, text: str, uid: str = "anonymous",
                        source: str = "Internal Chat", session_id: str = "default"):
+    """
+    Store a chat message under  users/{uid}/chat_history/{auto_id}
+    Each message carries a session_id so messages can be grouped by conversation.
+    Falls back to per-uid in-memory deque when Firestore is unavailable.
+    """
     payload = {
         "role":        role,
         "uid":         uid,
@@ -527,6 +605,7 @@ def write_chat_message(role: str, text: str, uid: str = "anonymous",
     if db:
         try:
             _user_ref(uid).collection("chat_history").add(payload)
+            # Keep session metadata doc up-to-date (title = first user message)
             _update_session_meta(uid, session_id, role, text, source)
         except Exception as e:
             print(f"chat_history write error ({uid}): {e}")
@@ -541,6 +620,7 @@ def write_chat_message(role: str, text: str, uid: str = "anonymous",
 
 
 def _update_session_meta(uid: str, session_id: str, role: str, text: str, source: str):
+    """Create or update the session summary doc: users/{uid}/chat_sessions/{session_id}"""
     if not db:
         return
     try:
@@ -548,6 +628,7 @@ def _update_session_meta(uid: str, session_id: str, role: str, text: str, source
         doc  = sref.get()
         now  = time.time()
         if not doc.exists:
+            # First message in this session — create with title from user text
             title = text[:55] + ("…" if len(text) > 55 else "") if role == "user" else "New conversation"
             sref.set({
                 "session_id":  session_id,
@@ -570,6 +651,11 @@ def _update_session_meta(uid: str, session_id: str, role: str, text: str, source
 
 
 def log_activity(text, source, status, risk_type, uid: str = "anonymous", session_id: str = "default"):
+    """
+    Increment per-user stats and write a scan log under
+    users/{uid}/scan_logs/{auto_id}
+    """
+    # Update per-user in-memory stats
     us = USER_STATS[uid]
     us["total_scans"] = us.get("total_scans", 0) + 1
     if status == "Risk":
@@ -595,9 +681,11 @@ def log_activity(text, source, status, risk_type, uid: str = "anonymous", sessio
         try:
             uref = _user_ref(uid)
             uref.collection("scan_logs").add({**entry, "created_at": firestore.SERVER_TIMESTAMP})
+            # Persist per-user stats
             uref.collection("meta").document("stats").set(
                 {**us, "updated_at": firestore.SERVER_TIMESTAMP}
             )
+            # Bump session risk/pii counters
             if status == "Risk" and session_id and session_id != "default":
                 try:
                     sref = uref.collection("chat_sessions").document(session_id)
@@ -624,7 +712,7 @@ def health():
         "gemini":     bool(GEMINI_API_KEY),
         "firebase":   db is not None,
         "encryption": is_encryption_on(),
-        "version":    "2.9.0",
+        "version":    "2.7.0",
         "timestamp":  datetime.now().isoformat(),
     })
 
@@ -632,10 +720,8 @@ def health():
 # ============================================================
 # SETTINGS
 # ============================================================
-@app.route('/api/settings', methods=['GET','POST','OPTIONS'])
+@app.route('/api/settings', methods=['GET','POST'])
 def settings_endpoint():
-    if request.method == 'OPTIONS':
-        return '', 204
     global ACTIVE_SETTINGS
     if request.method == 'GET':
         return jsonify({"settings": ACTIVE_SETTINGS})
@@ -679,6 +765,7 @@ def verify_firebase_token(id_token):
         return None
 
 def _init_user_in_firestore(uid: str, profile: dict):
+    """Create the user's top-level profile document if it doesn't exist."""
     if not db:
         return
     try:
@@ -695,10 +782,8 @@ def _init_user_in_firestore(uid: str, profile: dict):
         print(f"Profile init error ({uid}): {e}")
 
 
-@app.route('/api/auth/firebase-verify', methods=['POST','OPTIONS'])
+@app.route('/api/auth/firebase-verify', methods=['POST'])
 def firebase_verify():
-    if request.method == 'OPTIONS':
-        return '', 204
     ip = request.remote_addr
     if is_rate_limited(ip):
         return jsonify({"error": "Rate limit exceeded."}), 429
@@ -740,10 +825,8 @@ def firebase_verify():
                     "user":  {k:v for k,v in SESSIONS[token].items() if k != "created_at"}})
 
 
-@app.route('/api/auth/login', methods=['POST','OPTIONS'])
+@app.route('/api/auth/login', methods=['POST'])
 def login():
-    if request.method == 'OPTIONS':
-        return '', 204
     ip = request.remote_addr
     if is_rate_limited(ip):
         return jsonify({"error": "Rate limit exceeded."}), 429
@@ -769,10 +852,8 @@ def login():
                     "user":  {k:v for k,v in SESSIONS[token].items() if k != "created_at"}})
 
 
-@app.route('/api/auth/register', methods=['POST','OPTIONS'])
+@app.route('/api/auth/register', methods=['POST'])
 def register():
-    if request.method == 'OPTIONS':
-        return '', 204
     ip   = request.remote_addr
     data = request.get_json()
     email, pw, name, org_key = (
@@ -789,16 +870,22 @@ def register():
     user_data = {"email":email,"name":name,"role":"Analyst",
                  "clearance":"Analyst","avatar":name[:2].upper(),"scan_count":0}
     SESSIONS[token] = {"uid": uid, **user_data, "created_at": datetime.now().isoformat()}
-    _init_user_in_firestore(uid, {"name":name,"email":email,"role":"Analyst","clearance":"Analyst",
-                                   "createdAt": datetime.now().isoformat()})
+
+    profile = {"name":name,"email":email,"role":"Analyst","clearance":"Analyst",
+               "createdAt": datetime.now().isoformat()}
+    _init_user_in_firestore(uid, profile)
+
     audit("REGISTER_SUCCESS", f"New user: {email}", ip=ip, user=email)
     return jsonify({"token": token, "user": {**user_data, "uid": uid}})
 
 
-@app.route('/api/auth/token-verify', methods=['GET','OPTIONS'])
+@app.route('/api/auth/token-verify', methods=['GET'])
 def token_verify():
-    if request.method == 'OPTIONS':
-        return '', 204
+    """
+    Extension calls this with Authorization: Bearer <token> to verify
+    the token is valid and get the linked user's name/email back.
+    Returns 200 + user info if valid, 401 if not.
+    """
     auth  = request.headers.get("Authorization", "")
     token = auth.replace("Bearer ", "").strip()
     if not token:
@@ -815,14 +902,20 @@ def token_verify():
     })
 
 
-@app.route('/api/auth/refresh', methods=['POST','OPTIONS'])
+
+@app.route('/api/auth/refresh', methods=['POST'])
 def refresh_session():
-    if request.method == 'OPTIONS':
-        return '', 204
+    """
+    Called by the frontend when any API call returns 401.
+    Accepts a Firebase ID token and creates a fresh session token.
+    This handles Flask restarts gracefully — no re-login required.
+    """
     data     = request.get_json() or {}
     id_token = data.get('idToken', '')
+
     if not id_token:
         return jsonify({"error": "No Firebase ID token provided"}), 400
+
     decoded = verify_firebase_token(id_token)
     if not decoded:
         return jsonify({"error": "Invalid Firebase token — please log in again"}), 401
@@ -830,6 +923,7 @@ def refresh_session():
     uid   = decoded.get('uid', '')
     email = decoded.get('email', '')
     name  = decoded.get('name', email.split('@')[0] if email else 'User')
+
     profile = {}
     if db:
         try:
@@ -841,24 +935,23 @@ def refresh_session():
 
     token = str(uuid.uuid4())
     SESSIONS[token] = {
-        "uid":       uid, "email":     email,
+        "uid":       uid,
+        "email":     email,
         "name":      profile.get('name', name),
         "role":      profile.get('role', 'Analyst'),
         "clearance": profile.get('clearance', 'Analyst'),
         "avatar":    (profile.get('name', name) or 'U')[:2].upper(),
-        "created_at":datetime.now().isoformat(), "scan_count": 0,
+        "created_at":datetime.now().isoformat(),
+        "scan_count": 0,
     }
-    print(f"🔄 Session refreshed for {email} [{uid[:12]}]")
+    print(f"🔄 Session refreshed for {email} [{uid[:12]}] — new token issued")
     return jsonify({
         "token": token,
         "user":  {k: v for k, v in SESSIONS[token].items() if k != "created_at"}
     })
 
-
-@app.route('/api/auth/logout', methods=['POST','OPTIONS'])
+@app.route('/api/auth/logout', methods=['POST'])
 def do_logout():
-    if request.method == 'OPTIONS':
-        return '', 204
     token = request.headers.get('Authorization','').replace('Bearer ','')
     if token in SESSIONS:
         audit("LOGOUT", f"Logout: {SESSIONS[token].get('email','?')}", ip=request.remote_addr)
@@ -867,12 +960,10 @@ def do_logout():
 
 
 # ============================================================
-# CHAT
+# CHAT  — user-aware
 # ============================================================
-@app.route('/api/chat', methods=['POST','OPTIONS'])
+@app.route('/api/chat', methods=['POST'])
 def internal_chat():
-    if request.method == 'OPTIONS':
-        return '', 204
     ip = request.remote_addr
     if is_rate_limited(ip):
         return jsonify({"response": "⚠ Rate limit exceeded."}), 429
@@ -891,8 +982,11 @@ def internal_chat():
     except Exception:
         cls = "CONVERSATIONAL"
 
+    # Fetch user personalization and build personalized system prompt
+    # Uses _build_system_prompt_with_memory so saved memories are included
     user_prefs  = _get_user_prefs(uid)
     system_text = _build_system_prompt_with_memory(user_prefs, uid)
+    print(f"💬 Chat [{uid[:12]}] msg={user_msg[:50]!r} | prefs_loaded={bool(user_prefs)} | prompt_len={len(system_text)}")
 
     try:
         bot_text = invoke_with_retry(chat_model, [
@@ -902,6 +996,8 @@ def internal_chat():
         write_chat_message("bot", bot_text, uid=uid, source=source, session_id=session_id)
         log_activity(user_msg, source, "Safe", f"Chat ({cls})", uid=uid, session_id=session_id)
 
+        # Extract memories from this exchange asynchronously (best-effort)
+        # Done AFTER response is sent so it doesn't delay the user
         import threading
         t = threading.Thread(
             target=_extract_memories_from_exchange,
@@ -916,7 +1012,7 @@ def internal_chat():
 
 
 # ============================================================
-# ANALYZE
+# ANALYZE  — user-aware
 # ============================================================
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
 def analyze():
@@ -992,7 +1088,7 @@ def analyze():
                 context += "--- ARXIV ---\n" + "\n".join(d.page_content for d in docs) + "\n"
             except Exception: pass
 
-        links       = extract_links(text_to_analyze)
+        links      = extract_links(text_to_analyze)
         url_results = []
         if ACTIVE_SETTINGS.get("urlCheck", True):
             for link in links:
@@ -1018,20 +1114,25 @@ Correction/Refinement: [Corrected version or N/A]
                 if "Contradicted" in resp or "Not Mentioned" in resp:
                     results["hallucination_info"]["detected"] = True
                     results["hallucination_info"]["reason"]   = resp
+                    # Try to extract correction from structured response
                     m = re.search(r"Correction/Refinement:\s*(.+?)(?:\n|$)", resp, re.DOTALL)
                     if m:
                         _extracted = m.group(1).strip()
                         if _extracted and _extracted not in ("N/A","None","n/a","none"):
                             results["hallucination_info"]["correction"] = _extracted
+                    # Normalise the parsed correction
                     _corr = (results["hallucination_info"].get("correction") or "").strip()
                     _bad  = {"N/A", "None", "none", "n/a", "N/a", ""}
                     if not _corr or _corr in _bad:
+                        # Fallback: ask the correction model directly with the user's original question
                         _prompt = original_query if original_query else f"What is the correct answer to: {text_to_analyze}"
                         try:
                             corr = invoke_with_retry(correction_model, [
                                 SystemMessage(content=(
                                     "You are a factual correction engine. "
-                                    "Provide the correct, concise factual answer. Be direct. No preamble."
+                                    "The user asked a question and received a potentially wrong answer. "
+                                    "Using your best knowledge, provide the correct, concise factual answer. "
+                                    "Be direct and clear. No preamble."
                                 )),
                                 f"User question: {_prompt}\n\nIncorrect/unverified answer: {text_to_analyze}\n\nCorrect answer:"
                             ])
@@ -1047,12 +1148,10 @@ Correction/Refinement: [Corrected version or N/A]
 
 
 # ============================================================
-# STATS
+# STATS  — per-user
 # ============================================================
-@app.route('/stats', methods=['GET','OPTIONS'])
+@app.route('/stats', methods=['GET'])
 def get_stats():
-    if request.method == 'OPTIONS':
-        return '', 204
     uid = get_uid_from_request()
     decrypted_logs = []
     current_stats  = dict(USER_STATS[uid])
@@ -1060,10 +1159,13 @@ def get_stats():
     if db:
         try:
             uref = _user_ref(uid)
+            # Per-user stats
             stats_doc = uref.collection("meta").document("stats").get()
             if stats_doc.exists:
                 current_stats = stats_doc.to_dict() or current_stats
             current_stats.pop("updated_at", None)
+
+            # Per-user scan logs
             docs = (uref.collection("scan_logs")
                     .order_by("ts_unix", direction=firestore.Query.DESCENDING)
                     .limit(50).stream())
@@ -1085,12 +1187,10 @@ def get_stats():
 
 
 # ============================================================
-# CHAT HISTORY
+# CHAT HISTORY  — per-user
 # ============================================================
-@app.route('/api/chat/history', methods=['GET','OPTIONS'])
+@app.route('/api/chat/history', methods=['GET'])
 def chat_history():
-    if request.method == 'OPTIONS':
-        return '', 204
     uid   = get_uid_from_request()
     limit = int(request.args.get("limit","50"))
     limit = max(1, min(limit, 200))
@@ -1119,17 +1219,16 @@ def chat_history():
     else:
         return jsonify({"messages": []})
 
+    # Return in chronological order for the frontend
     out.reverse()
     return jsonify({"messages": out, "uid": uid})
 
 
 # ============================================================
-# CHAT SESSIONS
+# CHAT SESSIONS LIST  — returns all conversation sessions for this user
 # ============================================================
-@app.route('/api/chat/sessions', methods=['GET','OPTIONS'])
+@app.route('/api/chat/sessions', methods=['GET'])
 def chat_sessions():
-    if request.method == 'OPTIONS':
-        return '', 204
     uid = get_uid_from_request()
     sessions = []
     if db:
@@ -1151,6 +1250,7 @@ def chat_sessions():
         except Exception as e:
             return jsonify({"error": str(e)}), 500
     else:
+        # In-memory fallback: derive sessions from USER_SCAN_LOGS
         seen = {}
         for log in USER_SCAN_LOGS[uid]:
             sid = log.get("session_id", "default")
@@ -1165,20 +1265,29 @@ def chat_sessions():
     return jsonify({"sessions": sessions, "uid": uid})
 
 
-@app.route('/api/chat/session/<session_id>', methods=['GET','OPTIONS'])
+@app.route('/api/chat/session/<session_id>', methods=['GET'])
 def chat_session_messages(session_id):
-    if request.method == 'OPTIONS':
-        return '', 204
+    """
+    Return all messages for a specific session.
+    
+    IMPORTANT: We intentionally avoid .where("session_id","==") + .order_by("ts_unix")
+    because that requires a Firestore composite index that may not exist.
+    Instead, we fetch all recent messages for the user ordered by ts_unix (single-field
+    index, always available) and filter by session_id in Python.
+    This is fast enough — users rarely have >500 messages total.
+    """
     uid   = get_uid_from_request()
     out   = []
     if db:
         try:
+            # Fetch all messages for this user, sorted by time (no composite index needed)
             docs = (_user_ref(uid).collection("chat_history")
                     .order_by("ts_unix")
                     .limit(500)
                     .stream())
             for d in docs:
                 m = d.to_dict() or {}
+                # Filter by session_id in Python
                 if m.get("session_id") != session_id:
                     continue
                 out.append({
@@ -1191,23 +1300,31 @@ def chat_session_messages(session_id):
                     "enc":        bool(m.get("enc", False)),
                 })
         except Exception as e:
+            print(f"chat_session_messages error ({uid}/{session_id}): {e}")
             return jsonify({"error": str(e), "messages": []}), 500
     else:
         for log in USER_SCAN_LOGS[uid]:
             if log.get("session_id") == session_id:
                 out.append({
-                    "id": str(uuid.uuid4())[:8], "role": "user",
-                    "text": decrypt_data(log.get("snippet", "")),
-                    "source": log.get("source", ""), "session_id": session_id,
-                    "ts_unix": log.get("ts_unix", 0), "enc": bool(log.get("enc", False)),
+                    "id":         str(uuid.uuid4())[:8],
+                    "role":       "user",
+                    "text":       decrypt_data(log.get("snippet", "")),
+                    "source":     log.get("source", ""),
+                    "session_id": session_id,
+                    "ts_unix":    log.get("ts_unix", 0),
+                    "enc":        bool(log.get("enc", False)),
                 })
     return jsonify({"messages": out, "session_id": session_id, "uid": uid})
 
 
+
+
 # ============================================================
-# MEMORY
+# MEMORY  — persistent facts the bot remembers across sessions
 # ============================================================
+
 def _load_memories(uid: str) -> list:
+    """Return list of memory dicts for uid. Cache-first, Firestore fallback."""
     if uid in MEMORY_CACHE:
         return MEMORY_CACHE[uid]
     memories = []
@@ -1224,7 +1341,7 @@ def _load_memories(uid: str) -> list:
                     "ts_unix":    m.get("ts_unix", 0),
                     "created_at": str(m.get("created_at", "")),
                 })
-            memories.reverse()
+            memories.reverse()  # chronological
         except Exception as e:
             print(f"⚠️  _load_memories [{uid[:12]}]: {e}")
     MEMORY_CACHE[uid] = memories
@@ -1232,20 +1349,26 @@ def _load_memories(uid: str) -> list:
 
 
 def _save_memory(uid: str, text: str) -> dict:
+    """Save a single memory. Returns the saved dict, or None if limit reached / duplicate."""
     text = text.strip()
     if not text or uid == "anonymous":
         return None
     memories = _load_memories(uid)
+    # Skip duplicates
     if any(m["text"].lower().strip() == text.lower() for m in memories):
         return None
+    # Enforce cap
     if len(memories) >= MEMORY_LIMIT:
+        print(f"⚠️  Memory full for [{uid[:12]}] — skipping: {text[:60]!r}")
         return None
 
     ts     = time.time()
     doc_id = str(uuid.uuid4())[:16]
     entry  = {
-        "uid": uid, "text": encrypt_data(text),
-        "ts_unix": ts, "enc": is_encryption_on(),
+        "uid":        uid,
+        "text":       encrypt_data(text),
+        "ts_unix":    ts,
+        "enc":        is_encryption_on(),
         "created_at": firestore.SERVER_TIMESTAMP if db else datetime.now().isoformat(),
     }
     if db:
@@ -1256,10 +1379,12 @@ def _save_memory(uid: str, text: str) -> dict:
 
     cache_entry = {"id": doc_id, "text": text, "ts_unix": ts}
     MEMORY_CACHE[uid] = MEMORY_CACHE.get(uid, []) + [cache_entry]
+    print(f"🧠 Memory saved [{uid[:12]}]: {text[:80]!r}")
     return cache_entry
 
 
 def _delete_memory(uid: str, memory_id: str) -> bool:
+    """Delete a single memory by its document ID."""
     if db:
         try:
             _user_ref(uid).collection("memories").document(memory_id).delete()
@@ -1268,10 +1393,12 @@ def _delete_memory(uid: str, memory_id: str) -> bool:
             return False
     if uid in MEMORY_CACHE:
         MEMORY_CACHE[uid] = [m for m in MEMORY_CACHE[uid] if m["id"] != memory_id]
+    print(f"🗑️  Memory deleted [{uid[:12]}]: {memory_id}")
     return True
 
 
 def _clear_all_memories(uid: str) -> int:
+    """Delete ALL memories for a user. Returns count deleted."""
     count = 0
     if db:
         try:
@@ -1283,52 +1410,88 @@ def _clear_all_memories(uid: str) -> int:
             print(f"⚠️  _clear_all_memories [{uid[:12]}]: {e}")
     cache_count = len(MEMORY_CACHE.get(uid, []))
     MEMORY_CACHE[uid] = []
+    print(f"🗑️  All memories cleared [{uid[:12]}]: {max(count, cache_count)} entries")
     return max(count, cache_count)
 
 
 def _extract_memories_from_exchange(user_msg: str, bot_response: str, uid: str):
+    """
+    Ask Gemini to extract memorable facts from one conversation exchange.
+    Runs in a background thread — does not block the chat response.
+    Only extracts facts explicitly stated, not inferred.
+    """
     if uid == "anonymous":
         return
+
     extraction_prompt = (
         'You are a memory extraction assistant. Read this conversation exchange and extract ONLY '
         'facts worth remembering about the user long-term.\n\n'
         f'User said: "{user_msg[:400]}"\n'
         f'Assistant replied: "{bot_response[:400]}"\n\n'
+        'Extract facts like:\n'
+        '- Personal details (name, job, location, student ID, section, field of study)\n'
+        '- Ongoing projects, assignments, or tasks they mentioned\n'
+        '- Preferences, goals, or constraints they expressed\n'
+        '- Technical context (tools, languages, frameworks they use)\n'
+        '- Important dates, deadlines, or events\n\n'
         'Rules:\n'
         '- Each memory MUST be a complete sentence about the USER\n'
         '- Only extract facts EXPLICITLY STATED — never infer\n'
-        '- Skip trivial chat\n'
+        '- Skip trivial chat ("said hi", "asked a question")\n'
         '- Maximum 3 memories per exchange\n'
         '- If nothing worth remembering, return exactly: NONE\n\n'
-        'Output one memory per line, no bullets, no numbers.'
+        'Output one memory per line, no bullets, no numbers:\n'
+        'The user is studying IoT engineering.\n'
+        'NONE'
     )
+
     try:
         resp = invoke_with_retry(
-            ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1, google_api_key=GEMINI_API_KEY),
+            ChatGoogleGenerativeAI(
+                model="gemini-2.5-flash", temperature=0.1,
+                google_api_key=GEMINI_API_KEY
+            ),
             extraction_prompt
         ).content.strip()
+
         if not resp or resp.strip().upper() == "NONE":
             return
-        lines = [l.strip() for l in resp.split("\n")
-                 if l.strip() and l.strip().upper() != "NONE"
-                    and not l.strip().startswith("#") and len(l.strip()) > 10]
+
+        lines = [
+            l.strip() for l in resp.split("\n")
+            if l.strip() and l.strip().upper() != "NONE"
+               and not l.strip().startswith("#")
+               and len(l.strip()) > 10
+        ]
+        saved = 0
         for line in lines[:3]:
-            _save_memory(uid, line)
+            if _save_memory(uid, line):
+                saved += 1
+        if saved:
+            print(f"🧠 Extracted {saved} new memories for [{uid[:12]}]")
     except Exception as e:
         print(f"⚠️  Memory extraction error [{uid[:12]}]: {e}")
 
 
-@app.route('/api/memory', methods=['GET','OPTIONS'])
+# ============================================================
+# MEMORY API ROUTES
+# ============================================================
+
+@app.route('/api/memory', methods=['GET'])
 def get_memories():
-    if request.method == 'OPTIONS':
-        return '', 204
     uid = get_uid_from_request()
     if uid == "anonymous":
         return jsonify({"error": "Not authenticated"}), 401
     memories = _load_memories(uid)
     used = len(memories)
-    return jsonify({"memories": memories, "count": used, "limit": MEMORY_LIMIT,
-                    "pct_used": round((used / MEMORY_LIMIT) * 100), "full": used >= MEMORY_LIMIT})
+    pct  = round((used / MEMORY_LIMIT) * 100)
+    return jsonify({
+        "memories": memories,
+        "count":    used,
+        "limit":    MEMORY_LIMIT,
+        "pct_used": pct,
+        "full":     used >= MEMORY_LIMIT,
+    })
 
 
 @app.route('/api/memory', methods=['POST'])
@@ -1342,7 +1505,8 @@ def add_memory_route():
         return jsonify({"error": "Memory text is required"}), 400
     if len(text) > 500:
         return jsonify({"error": "Memory too long (max 500 chars)"}), 400
-    if len(_load_memories(uid)) >= MEMORY_LIMIT:
+    memories = _load_memories(uid)
+    if len(memories) >= MEMORY_LIMIT:
         return jsonify({"error": f"Memory full ({MEMORY_LIMIT} entries). Delete some first."}), 400
     entry = _save_memory(uid, text)
     if not entry:
@@ -1350,10 +1514,8 @@ def add_memory_route():
     return jsonify({"memory": entry, "message": "Memory saved"})
 
 
-@app.route('/api/memory/<memory_id>', methods=['DELETE','OPTIONS'])
+@app.route('/api/memory/<memory_id>', methods=['DELETE'])
 def delete_memory_route(memory_id):
-    if request.method == 'OPTIONS':
-        return '', 204
     uid = get_uid_from_request()
     if uid == "anonymous":
         return jsonify({"error": "Not authenticated"}), 401
@@ -1361,10 +1523,8 @@ def delete_memory_route(memory_id):
     return jsonify({"deleted": ok, "id": memory_id})
 
 
-@app.route('/api/memory/clear', methods=['POST','OPTIONS'])
+@app.route('/api/memory/clear', methods=['POST'])
 def clear_memories_route():
-    if request.method == 'OPTIONS':
-        return '', 204
     uid = get_uid_from_request()
     if uid == "anonymous":
         return jsonify({"error": "Not authenticated"}), 401
@@ -1373,16 +1533,28 @@ def clear_memories_route():
 
 
 # ============================================================
-# PERSONALIZATION
+# PERSONALIZATION  — per-user preferences that shape Gemini responses
 # ============================================================
-@app.route('/api/personalization', methods=['GET','POST','OPTIONS'])
+@app.route('/api/personalization', methods=['GET','POST'])
 def personalization():
-    if request.method == 'OPTIONS':
-        return '', 204
+    """
+    GET  → returns current personalization prefs for this user
+    POST → saves personalization prefs to users/{uid}/meta/personalization
+    """
     uid = get_uid_from_request()
     if uid == "anonymous":
-        return jsonify({"error": "Not authenticated",
-                        "hint": "Token missing or server restarted. Re-login to get a fresh token."}), 401
+        # Log what token was received to help debug
+        auth  = request.headers.get("Authorization", "")
+        token = auth.replace("Bearer ", "").strip()
+        if token:
+            print(f"⚠️  /api/personalization 401 — token '{token[:12]}…' not in SESSIONS "
+                  f"(Flask may have restarted — user needs to re-login)")
+        else:
+            print("⚠️  /api/personalization 401 — no Authorization header sent")
+        return jsonify({
+            "error": "Not authenticated",
+            "hint":  "Token missing or Flask restarted. Re-login to TrustGuard to get a fresh token."
+        }), 401
 
     if request.method == 'GET':
         prefs = {}
@@ -1396,130 +1568,257 @@ def personalization():
                 print(f"Personalization GET error ({uid}): {e}")
         return jsonify({"prefs": prefs})
 
-    data    = request.get_json() or {}
-    allowed = {"nickname","occupation","about","style","tone","warm","enthusiastic","headersLists","emoji","customInstructions"}
-    prefs   = {k: v for k, v in data.items() if k in allowed}
+    # POST — save
+    data = request.get_json() or {}
+    allowed = {
+        "nickname", "occupation", "about",
+        "style", "tone",
+        "warm", "enthusiastic", "headersLists", "emoji",
+        "customInstructions",
+    }
+    prefs = {k: v for k, v in data.items() if k in allowed}
+
+    # Always update the in-memory cache so chat route picks up changes instantly
     USER_PREFS_CACHE[uid] = prefs
+    print(f"✅ Personalization saved for [{uid[:12]}]: nickname={prefs.get('nickname')!r}, "
+          f"style={prefs.get('style')!r}, tone={prefs.get('tone')!r}, "
+          f"warm={prefs.get('warm')}, enthusiastic={prefs.get('enthusiastic')}, "
+          f"custom={repr(prefs.get('customInstructions','')[:60])}")
 
     if db:
         try:
             _user_ref(uid).collection("meta").document("personalization").set(
                 {**prefs, "updated_at": firestore.SERVER_TIMESTAMP}
             )
+            print(f"✅ Personalization also persisted to Firestore for [{uid[:12]}]")
         except Exception as e:
-            print(f"⚠️  Personalization Firestore error ({uid}): {e}")
+            print(f"⚠️  Personalization Firestore error ({uid}): {e} — in-memory cache still active")
+    else:
+        print(f"ℹ️  No Firestore — personalization stored in-memory only (lost on restart)")
 
     return jsonify({"prefs": prefs, "message": "Personalization saved"})
 
 
 def _get_user_prefs(uid: str) -> dict:
+    """
+    Fetch personalization prefs for a user.
+    Priority: in-memory cache → Firestore → empty dict
+    Always prints what it finds so you can verify in Flask logs.
+    """
     if not uid or uid == "anonymous":
+        print("⚙️  _get_user_prefs: uid is anonymous — no prefs")
         return {}
+
+    # 1. Check in-memory cache first (fastest, always works)
     if uid in USER_PREFS_CACHE:
-        return USER_PREFS_CACHE[uid]
+        cached = USER_PREFS_CACHE[uid]
+        print(f"⚙️  _get_user_prefs [{uid[:12]}]: loaded from cache — "
+              f"nickname={cached.get('nickname')!r}, style={cached.get('style')!r}, "
+              f"tone={cached.get('tone')!r}, custom={bool(cached.get('customInstructions'))}")
+        return cached
+
+    # 2. Try Firestore
     if db:
         try:
             doc = _user_ref(uid).collection("meta").document("personalization").get()
             if doc.exists:
                 prefs = {k: v for k, v in (doc.to_dict() or {}).items() if k != "updated_at"}
-                USER_PREFS_CACHE[uid] = prefs
+                USER_PREFS_CACHE[uid] = prefs   # warm the cache
+                print(f"⚙️  _get_user_prefs [{uid[:12]}]: loaded from Firestore — "
+                      f"nickname={prefs.get('nickname')!r}, style={prefs.get('style')!r}, "
+                      f"tone={prefs.get('tone')!r}, custom={bool(prefs.get('customInstructions'))}")
                 return prefs
+            else:
+                print(f"⚙️  _get_user_prefs [{uid[:12]}]: no Firestore doc found")
         except Exception as e:
             print(f"⚠️  _get_user_prefs [{uid[:12]}]: Firestore error — {e}")
+    else:
+        print(f"⚙️  _get_user_prefs [{uid[:12]}]: no Firestore — cache miss = empty prefs")
+
     return {}
 
 
 def _build_system_prompt(prefs: dict) -> str:
-    sections = ["You are TrustGuard AI, a helpful assistant embedded in an enterprise AI safety platform."]
+    """
+    Build the system prompt injected into every Gemini chat call.
+    Uses a structured, section-based format that Gemini responds to reliably.
+    Logs what it builds so you can verify in Flask terminal.
+    """
+    sections = []
+
+    # ── Core identity ─────────────────────────────────────────
+    sections.append(
+        "You are TrustGuard AI, a helpful assistant embedded in an enterprise AI safety platform."
+    )
+
+    # ── User identity (MUST be followed — very explicit) ──────
     nickname   = (prefs.get("nickname")   or "").strip()
     occupation = (prefs.get("occupation") or "").strip()
     about      = (prefs.get("about")      or "").strip()
+
     if nickname or occupation or about:
         identity_parts = ["ABOUT THE USER YOU ARE TALKING TO:"]
         if nickname:
-            identity_parts.append(f'- Their name is "{nickname}". Address them as "{nickname}" naturally.')
+            identity_parts.append(
+                f'- Their name is "{nickname}". '
+                f'You MUST address them as "{nickname}" - use their name naturally in your responses, '
+                f'especially at the start or when making a direct point.'
+            )
         if occupation:
-            identity_parts.append(f"- They work as: {occupation}. Adapt terminology accordingly.")
+            identity_parts.append(
+                f"- They work as: {occupation}. "
+                f"Adapt your examples, terminology, and level of technical detail accordingly."
+            )
         if about:
             identity_parts.append(f"- Additional context: {about}")
         sections.append("\n".join(identity_parts))
+
+    # ── Response style ─────────────────────────────────────────
     style = prefs.get("style", "balanced")
     style_map = {
-        "concise":  "RESPONSE LENGTH: Be concise and direct. No preamble.",
-        "detailed": "RESPONSE LENGTH: Be thorough. Include context, reasoning, and examples.",
-        "balanced": "RESPONSE LENGTH: Use balanced length — complete but not overwhelming.",
+        "concise":  "RESPONSE LENGTH: Be concise. Get straight to the point. No preamble, no padding. "
+                    "If the answer is one sentence, give one sentence.",
+        "detailed": "RESPONSE LENGTH: Be thorough and comprehensive. Include context, reasoning, "
+                    "examples, and edge cases. The user prefers complete answers.",
+        "balanced": "RESPONSE LENGTH: Use balanced length — complete enough to be useful, "
+                    "concise enough not to overwhelm.",
     }
     sections.append(style_map.get(style, style_map["balanced"]))
+
+    # ── Tone ───────────────────────────────────────────────────
     tone = prefs.get("tone", "neutral")
     tone_map = {
-        "formal":  "TONE: Strictly professional. No contractions, no slang.",
-        "casual":  "TONE: Casual and conversational. Like talking to a smart friend.",
-        "neutral": "TONE: Neutral, professional-but-friendly.",
+        "formal":  "TONE: Use a strictly professional, formal tone. No contractions, no slang, "
+                   "structured sentences. Like a senior consultant speaking to a client.",
+        "casual":  "TONE: Use a casual, conversational tone. Write like you're talking to a smart "
+                   "friend. Contractions are fine. Keep it human and relaxed.",
+        "neutral": "TONE: Use a neutral, professional-but-friendly tone. Approachable but not overly casual.",
     }
     sections.append(tone_map.get(tone, tone_map["neutral"]))
+
+    # ── Characteristics ────────────────────────────────────────
     chars = []
-    if prefs.get("warm"):        chars.append("Be warm and empathetic.")
-    if prefs.get("enthusiastic"):chars.append("Show genuine enthusiasm.")
-    if prefs.get("headersLists"):chars.append("Use headers and bullet lists for longer responses.")
-    else:                         chars.append("Use flowing prose, not bullet lists, unless content is enumerable.")
-    if prefs.get("emoji"):       chars.append("Add relevant emoji occasionally but sparingly.")
+    if prefs.get("warm"):
+        chars.append("Be warm and empathetic — acknowledge the human side of questions, "
+                     "be encouraging, and show you care about helping.")
+    if prefs.get("enthusiastic"):
+        chars.append("Show genuine enthusiasm and positive energy — let your interest in the "
+                     "topic come through naturally.")
+    if prefs.get("headersLists"):
+        chars.append("Structure longer responses with clear headers (##) and bullet lists. "
+                     "Make the response easy to scan.")
+    else:
+        chars.append("Use flowing prose, not bullet lists, unless the content is "
+                     "naturally enumerable (e.g. steps, options).")
+    if prefs.get("emoji"):
+        chars.append("Add relevant emoji occasionally to add warmth — but use them sparingly, "
+                     "only where they genuinely fit.")
     if chars:
         sections.append("STYLE CHARACTERISTICS:\n" + "\n".join(f"- {c}" for c in chars))
+
+    # ── Custom instructions (absolute highest priority) ────────
     custom = (prefs.get("customInstructions") or "").strip()
     if custom:
-        sections.append(f"CRITICAL — USER'S PERSONAL INSTRUCTIONS (override everything):\n{custom}")
+        sections.append(
+            f"CRITICAL — USER'S PERSONAL INSTRUCTIONS (these override everything else above, "
+            f"follow them exactly):\n{custom}"
+        )
+
     sections.append("Always be accurate and honest. Never make up facts.")
-    return "\n\n".join(sections)
+
+    prompt = "\n\n".join(sections)
+    print(f"⚙️  System prompt built ({len(prompt)} chars). "
+          f"nickname={nickname!r}, style={style!r}, tone={tone!r}, "
+          f"warm={prefs.get('warm')}, custom={bool(custom)}")
+    return prompt
 
 
 def _build_system_prompt_with_memory(prefs: dict, uid: str) -> str:
-    base     = _build_system_prompt(prefs)
+    """
+    Extends _build_system_prompt by appending the user's saved memories.
+    Called from /api/chat — this is what actually goes to Gemini.
+    """
+    base = _build_system_prompt(prefs)
     memories = _load_memories(uid)
+
     if not memories:
         return base
-    memory_lines = "\n".join(f"- {m['text']}" for m in memories[-40:])
+
+    memory_lines = "\n".join(f"- {m['text']}" for m in memories[-40:])  # last 40
     memory_section = (
         "THINGS YOU REMEMBER ABOUT THIS USER (from previous conversations):\n"
-        "Use this context naturally when relevant.\n"
+        "Use this context naturally when relevant — don't repeat it verbatim but let it inform "
+        "how you respond.\n"
         f"{memory_lines}"
     )
+    print(f"🧠 Injecting {len(memories)} memories into prompt for [{uid[:12]}]")
     return base + "\n\n" + memory_section
 
-
-@app.route('/api/personalization/debug', methods=['GET','OPTIONS'])
+# ============================================================
+# PERSONALIZATION DEBUG  — hit this in browser to verify prefs are loading
+# ============================================================
+@app.route('/api/personalization/debug', methods=['GET'])
 def personalization_debug():
-    if request.method == 'OPTIONS':
-        return '', 204
-    uid    = get_uid_from_request()
-    prefs  = _get_user_prefs(uid)
+    """
+    GET http://127.0.0.1:5000/api/personalization/debug
+    Returns what prefs the backend currently has for this user,
+    plus the exact system prompt that will be injected into chat.
+    Useful for verifying that personalization is working end-to-end.
+    """
+    uid = get_uid_from_request()
+    prefs = _get_user_prefs(uid)
     prompt = _build_system_prompt(prefs)
-    return jsonify({"uid": uid, "prefs": prefs, "cache_hit": uid in USER_PREFS_CACHE,
-                    "has_prefs": bool(prefs), "system_prompt": prompt, "prompt_len": len(prompt)})
+    return jsonify({
+        "uid":        uid,
+        "prefs":      prefs,
+        "cache_hit":  uid in USER_PREFS_CACHE,
+        "has_prefs":  bool(prefs),
+        "system_prompt": prompt,
+        "prompt_len": len(prompt),
+    })
+
 
 
 # ============================================================
-# VERIFY
+# VERIFY — Extension endpoint: full analysis on any AI response
+# Returns analysis JSON + a signed deep-link token so TrustGuard
+# can display the results without the user re-entering the text.
 # ============================================================
 @app.route('/verify', methods=['POST', 'OPTIONS'])
 def verify_response():
+    """
+    Called by the Chrome extension when user clicks "🛡️ Verify" on any
+    AI response (ChatGPT, Gemini, etc.).
+
+    Expects: { text, source_url, user_query, source }
+    Returns: { analysis, verify_id, deep_link, source, source_url, original_text }
+
+    The verify_id is a UUID stored in VERIFY_STORE so the TrustGuard
+    frontend can retrieve the full results without re-running analysis.
+    """
     if request.method == 'OPTIONS':
         return '', 204
+
     if is_rate_limited(request.remote_addr):
         return jsonify({"error": "Rate limited"}), 429
 
     uid  = get_uid_from_request()
     data = request.get_json() or {}
-    text         = (data.get('text')       or '').strip()
-    user_query   = (data.get('user_query') or '').strip()
-    source_url   = (data.get('source_url') or '').strip()
-    source_label = (data.get('source')     or (
+    text         = (data.get('text')         or '').strip()
+    user_query   = (data.get('user_query')   or '').strip()
+    source_url   = (data.get('source_url')   or '').strip()
+    source_label = (data.get('source')       or (
         'ChatGPT' if 'chatgpt' in source_url else
-        'Gemini'  if 'google'  in source_url else 'AI Tool'
+        'Gemini'  if 'google'  in source_url else
+        'AI Tool'
     ))
 
     if not text:
         return jsonify({"error": "No text provided"}), 400
 
+    print(f"🔍 /verify [{uid[:12]}] source={source_label!r} text={text[:60]!r}")
+
+    # ── Run full analysis (reuse existing logic) ──────────────
     results = {
         "hallucination_info": {"detected": False, "reason": "N/A", "correction": "N/A"},
         "pii_info":           {"detected": False, "details": [], "refined_text": text},
@@ -1534,27 +1833,30 @@ def verify_response():
 
     threshold = ACTIVE_SETTINGS.get("piiThreshold", 0.4)
     pii_hits  = analyzer.analyze(text=text, language="en", score_threshold=threshold)
+
     verified_pii = []
     for hit in pii_hits:
         ed = verify_pii_entity(text, hit, analysis_model)
         if ed:
             verified_pii.append(ed)
+
     if verified_pii:
         results["pii_info"]["detected"]     = True
         results["pii_info"]["details"]      = verified_pii
         results["pii_info"]["refined_text"] = custom_redact_pii(text, verified_pii, 0)
 
+    # RAG fact-check
     if is_factual and ACTIVE_SETTINGS.get("rag", True):
         context = ""
         query   = user_query or text
         if google_search_wrapper:
             try:
-                res = google_search_wrapper.results(query, num_results=5)
+                res     = google_search_wrapper.results(query, num_results=5)
                 context += "--- GOOGLE ---\n" + "\n".join(r.get('snippet','') for r in res) + "\n"
             except Exception: pass
         if wiki_retriever:
             try:
-                docs = wiki_retriever.invoke(query)
+                docs    = wiki_retriever.invoke(query)
                 context += "--- WIKI ---\n" + "\n".join(d.page_content for d in docs) + "\n"
             except Exception: pass
 
@@ -1585,10 +1887,9 @@ Correction/Refinement: [Corrected version or N/A]
                     m = re.search(r"Correction/Refinement:\s*(.+?)(?:\n|$)", resp, re.DOTALL)
                     if m:
                         c = m.group(1).strip()
-                        if c and c not in ("N/A","None","n/a"):
+                        if c and c not in ("N/A", "None", "n/a"):
                             results["hallucination_info"]["correction"] = c
-                    if not results["hallucination_info"].get("correction") or \
-                       results["hallucination_info"]["correction"] in ("N/A","None","n/a",""):
+                    if not results["hallucination_info"].get("correction") or                        results["hallucination_info"]["correction"] in ("N/A","None","n/a",""):
                         try:
                             corr = invoke_with_retry(correction_model, [
                                 SystemMessage(content="Provide the correct factual answer concisely."),
@@ -1602,39 +1903,56 @@ Correction/Refinement: [Corrected version or N/A]
             except Exception as e:
                 print(f"Verify RAG error: {e}")
 
+    # ── Store results and build deep-link ─────────────────────
     verify_id   = str(uuid.uuid4())
     VERIFY_STORE[verify_id] = {
-        "analysis": results, "original_text": text, "user_query": user_query,
-        "source": source_label, "source_url": source_url,
-        "created_at": time.time(), "uid": uid,
+        "analysis":       results,
+        "original_text":  text,
+        "user_query":     user_query,
+        "source":         source_label,
+        "source_url":     source_url,
+        "created_at":     time.time(),
+        "uid":            uid,
     }
-    _frontend = os.getenv("FRONTEND_URL", "https://trust-guard-phase2.vercel.app").split(",")[0].strip().rstrip("/")
+
+    # Deep-link: http://localhost:3000/?verify=<uuid>  (or wherever the app runs)
+    # Use FRONTEND_URL env var so deep-links work in production
+    _frontend = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
     deep_link = f"{_frontend}/?verify={verify_id}"
 
+    print(f"✅ /verify done: pii={results['pii_info']['detected']} "
+          f"hallucination={results['hallucination_info']['detected']} "
+          f"verify_id={verify_id}")
+
     return jsonify({
-        "verify_id": verify_id, "deep_link": deep_link,
-        "analysis": results, "source": source_label, "source_url": source_url,
-        "original_text": text, "refined_text": results["pii_info"].get("refined_text", text),
+        "verify_id":     verify_id,
+        "deep_link":     deep_link,
+        "analysis":      results,
+        "source":        source_label,
+        "source_url":    source_url,
+        "original_text": text,
+        "refined_text":  results["pii_info"].get("refined_text", text),
     })
 
 
-@app.route('/verify/<verify_id>', methods=['GET','OPTIONS'])
+@app.route('/verify/<verify_id>', methods=['GET'])
 def get_verify_result(verify_id):
-    if request.method == 'OPTIONS':
-        return '', 204
+    """Frontend calls this to retrieve stored analysis by ID."""
     result = VERIFY_STORE.get(verify_id)
     if not result:
         return jsonify({"error": "Verification result not found or expired"}), 404
     return jsonify(result)
 
-
 # ============================================================
-# SCAN
+# SCAN  (chrome extension passthrough)
 # ============================================================
-@app.route('/scan', methods=['POST','OPTIONS'])
+@app.route('/scan', methods=['POST'])
 def scan_text():
-    if request.method == 'OPTIONS':
-        return '', 204
+    """
+    Quick PII scan called by the Chrome extension on user INPUT text.
+    Uses Presidio (same engine as /analyze) — no more false positives from
+    simple @ or . patterns.  Only HIGH-verdict private entities count.
+    """
     if is_rate_limited(request.remote_addr):
         return jsonify({"pii_detected": False, "blocked": True}), 429
 
@@ -1650,24 +1968,40 @@ def scan_text():
         return jsonify({"pii_detected": False})
 
     threshold = ACTIVE_SETTINGS.get("piiThreshold", 0.4)
+
     try:
         hits = analyzer.analyze(text=text, language="en", score_threshold=threshold)
     except Exception as e:
         print(f"⚠️ /scan Presidio error: {e}")
         return jsonify({"pii_detected": False})
 
-    SCAN_PRIVATE = {"EMAIL_ADDRESS","PHONE_NUMBER","CREDIT_CARD","US_SSN","US_PASSPORT",
-                    "US_DRIVER_LICENSE","IBAN_CODE","MEDICAL_LICENSE","US_BANK_NUMBER"}
-    SCAN_SAFE    = {"NRP","LOCATION","ADDRESS","DATE_TIME","URL","IP_ADDRESS","ORG","TITLE","LANGUAGE"}
+    # Only count entity types that are genuinely sensitive in user input
+    PRIVATE_TYPES = {
+        "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD",
+        "US_SSN", "US_PASSPORT", "US_DRIVER_LICENSE",
+        "IBAN_CODE", "MEDICAL_LICENSE", "US_BANK_NUMBER",
+    }
+    # Types that should NEVER flag as PII in typed input
+    ALWAYS_SAFE = {
+        "NRP", "LOCATION", "ADDRESS", "DATE_TIME",
+        "URL", "IP_ADDRESS", "ORG", "TITLE", "LANGUAGE",
+    }
 
     real_pii = []
     for hit in hits:
-        if hit.entity_type in SCAN_SAFE or hit.entity_type not in SCAN_PRIVATE or hit.score < 0.65:
+        if hit.entity_type in ALWAYS_SAFE:
+            continue
+        if hit.entity_type not in PRIVATE_TYPES:
+            continue
+        # Must pass a higher confidence bar for scan (stricter than analyze)
+        if hit.score < 0.65:
             continue
         entity_text = text[hit.start:hit.end]
+        # Email: must have proper TLD (not just any @ + dot)
         if hit.entity_type == "EMAIL_ADDRESS":
             if not re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', entity_text):
                 continue
+        # Phone: validate with phonenumbers library
         if hit.entity_type == "PHONE_NUMBER":
             try:
                 p = phonenumbers.parse(entity_text, "IN")
@@ -1680,25 +2014,20 @@ def scan_text():
     detected = len(real_pii) > 0
     if detected:
         log_activity(text[:200], source, "Risk", "PII in input", uid=uid)
+        print(f"🔒 /scan [{uid[:12]}]: PII detected — {real_pii}")
     else:
         log_activity(text[:200], source, "Safe", "Input clean", uid=uid)
 
     return jsonify({"pii_detected": detected, "entities": real_pii})
 
 
-@app.route("/")
-def home():
-    return jsonify({"status": "TrustGuard API running", "version": "2.9.0",
-                    "firebase": db is not None, "encryption": is_encryption_on()})
-
-
 # ============================================================
 if __name__ == '__main__':
+    # In production (Render), use the PORT env var and bind to 0.0.0.0
+    # In development, fall back to port 5000 on localhost
     port  = int(os.getenv("PORT", 5000))
     debug = os.getenv("FLASK_ENV", "production") == "development"
     print("=" * 60)
     print(f"  TrustGuard Backend v2.9.0  |  port={port}  debug={debug}")
-    print(f"  Firebase: {'✅ connected' if db else '⚠️  in-memory mode'}")
-    print(f"  Encryption: {'✅ enabled' if cipher_suite else '⚠️  disabled'}")
     print("=" * 60)
     app.run(host='0.0.0.0', port=port, debug=debug)

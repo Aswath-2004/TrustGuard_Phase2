@@ -8,11 +8,12 @@
  * - Selector fallback chain for ChatGPT / Gemini / Claude
  */
 
-console.log("🛡️ TrustGuard v2.2 loaded on:", window.location.hostname);
+console.log("🛡️ TrustGuard v2.4 loaded on:", window.location.hostname);
 
 // ─── CONFIG ──────────────────────────────────────────────────
-const API_BASE       = "https://trustguard-phase2.onrender.com";   // Render backend
-const TRUSTGUARD_URL = "https://trust-guard-phase2.vercel.app";    // Vercel frontend
+// ✅ Correct URLs matching the actual deployed services
+const API_BASE       = "https://trustguard-phase2.onrender.com";
+const TRUSTGUARD_URL = "https://trust-guard-phase2.vercel.app";
 const VERIFY_URL     = `${API_BASE}/verify`;
 const SCAN_URL       = `${API_BASE}/scan`;
 

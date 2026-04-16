@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TrustGuard AI Verifier",
-  "version": "2.3",
+  "version": "2.4",
   "description": "One-click verification of AI responses for hallucinations and PII",
   "permissions": [
     "activeTab",
@@ -9,7 +9,9 @@
   ],
   "host_permissions": [
     "https://trustguard-phase2.onrender.com/*",
-    "https://trust-guard-phase2.vercel.app/*"
+    "https://trust-guard-phase2.vercel.app/*",
+    "https://trustguard.vercel.app/*",
+    "https://*.onrender.com/*"
   ],
   "content_scripts": [
     {
@@ -19,8 +21,12 @@
         "https://gemini.google.com/*",
         "https://claude.ai/*"
       ],
-      "js": ["content.js"],
-      "css": ["styles.css"],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
       "run_at": "document_idle"
     }
   ],
