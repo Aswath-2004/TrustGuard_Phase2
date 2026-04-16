@@ -116,7 +116,21 @@ def _handle_options():
 # ============================================================
 db = None
 if not firebase_admin._apps:
-    if os.path.exists("firebase_credentials.json"):
+    # ── Priority 1: env var (Render / production) ──────────────
+    # This allows you to paste the JSON content into a Render Env Var
+    _fb_creds_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
+    if _fb_creds_json:
+        try:
+            _creds_dict = json.loads(_fb_creds_json)
+            cred = credentials.Certificate(_creds_dict)
+            firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            print("🔥 Firebase connected via FIREBASE_CREDENTIALS_JSON env var!")
+        except Exception as e:
+            print(f"⚠️ Firebase env var error: {e}")
+            
+    # ── Priority 2: local file (development) ──────────────────
+    elif os.path.exists("firebase_credentials.json"):
         try:
             cred = credentials.Certificate("firebase_credentials.json")
             firebase_admin.initialize_app(cred)
@@ -126,7 +140,6 @@ if not firebase_admin._apps:
             print(f"⚠️ Firebase error: {e}")
     else:
         print("⚠️ firebase_credentials.json not found — in-memory mode.")
-
 
 # ============================================================
 # GLOBAL / IN-MEMORY STATE  (used when Firebase is absent)
