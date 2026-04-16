@@ -11,10 +11,10 @@
 console.log("🛡️ TrustGuard v2.2 loaded on:", window.location.hostname);
 
 // ─── CONFIG ──────────────────────────────────────────────────
-const API_BASE = "https://trustguard-api.onrender.com";
-const TRUSTGUARD_URL = "https://trustguard.vercel.app";
-const VERIFY_URL = `${API_BASE}/verify`;
-const SCAN_URL = `${API_BASE}/scan`;
+const API_BASE       = "https://trustguard-phase2.onrender.com";   // Render backend
+const TRUSTGUARD_URL = "https://trust-guard-phase2.vercel.app";    // Vercel frontend
+const VERIFY_URL     = `${API_BASE}/verify`;
+const SCAN_URL       = `${API_BASE}/scan`;
 
 // ─── TOKEN — read from chrome.storage (set by popup) ─────────
 // We keep it in a module-level variable so every fetch can use it
@@ -49,8 +49,8 @@ function authHeaders() {
 const HOST = window.location.hostname;
 const SITE =
   HOST.includes("chatgpt.com") || HOST.includes("chat.openai.com") ? "chatgpt" :
-    HOST.includes("gemini.google.com") ? "gemini" :
-      HOST.includes("claude.ai") ? "claude" : "unknown";
+  HOST.includes("gemini.google.com")                                ? "gemini"  :
+  HOST.includes("claude.ai")                                        ? "claude"  : "unknown";
 
 console.log("🛡️ Site:", SITE);
 
@@ -83,15 +83,15 @@ const BOT_SELECTORS = {
 
 const TEXT_SELECTORS = {
   chatgpt: [".markdown", ".prose", "[class*='prose']", "[class*='markdown']"],
-  gemini: [".markdown", ".response-text", "p"],
-  claude: [".prose", "[class*='prose']", "p"],
+  gemini:  [".markdown", ".response-text", "p"],
+  claude:  [".prose", "[class*='prose']", "p"],
   unknown: [".markdown", ".prose", "p"],
 };
 
 const USER_SELECTORS = {
   chatgpt: ['[data-message-author-role="user"]'],
-  gemini: [".user-query", ".user-message", '[data-role="user"]'],
-  claude: ['[data-testid="human-turn-text"]', '[class*="HumanMessage"]'],
+  gemini:  [".user-query", ".user-message", '[data-role="user"]'],
+  claude:  ['[data-testid="human-turn-text"]', '[class*="HumanMessage"]'],
   unknown: ['[class*="user-message"]', '[data-role="user"]'],
 };
 
@@ -101,7 +101,7 @@ function findBotContainers() {
     try {
       const found = Array.from(document.querySelectorAll(sel));
       if (found.length > 0) return found;
-    } catch (_) { }
+    } catch (_) {}
   }
   return [];
 }
@@ -112,7 +112,7 @@ function extractText(container) {
     try {
       const el = container.querySelector(sel);
       if (el && el.innerText.trim().length > 10) return el.innerText.trim();
-    } catch (_) { }
+    } catch (_) {}
   }
   return container.innerText.trim();
 }
@@ -129,7 +129,7 @@ function getPreviousUserMessage(botContainer) {
         if (el.matches(sel)) return el.innerText.trim().slice(0, 500);
         const inner = el.querySelector(sel);
         if (inner) return inner.innerText.trim().slice(0, 500);
-      } catch (_) { }
+      } catch (_) {}
     }
     if (el.dataset?.messageAuthorRole === "user") return el.innerText.trim().slice(0, 500);
   }
@@ -140,11 +140,11 @@ function getPreviousUserMessage(botContainer) {
     for (let i = idx - 1; i >= 0; i--) {
       const sib = siblings[i];
       if (sib.dataset?.messageAuthorRole === "user" ||
-        sib.className?.toString().includes("user")) {
+          sib.className?.toString().includes("user")) {
         return sib.innerText.trim().slice(0, 500);
       }
     }
-  } catch (_) { }
+  } catch (_) {}
   return "";
 }
 
@@ -195,8 +195,8 @@ function createVerifyButton(container) {
     btn.innerHTML = `<div class="tg-spin"></div><span>Verifying…</span>`;
     setBadge("scanning", "⏳ Analysing response…");
 
-    const text = extractText(container);
-    const query = getPreviousUserMessage(container);
+    const text     = extractText(container);
+    const query    = getPreviousUserMessage(container);
 
     if (!text || text.length < 10) {
       btn.classList.remove("loading");
@@ -217,8 +217,8 @@ function createVerifyButton(container) {
           user_query: query,
           source_url: window.location.href,
           source: SITE === "chatgpt" ? "ChatGPT"
-            : SITE === "gemini" ? "Gemini"
-              : SITE === "claude" ? "Claude" : "AI Tool",
+                : SITE === "gemini"  ? "Gemini"
+                : SITE === "claude"  ? "Claude" : "AI Tool",
         }),
       });
 
@@ -226,8 +226,8 @@ function createVerifyButton(container) {
       const data = await res.json();
 
       const halluc = data.analysis?.hallucination_info?.detected;
-      const pii = data.analysis?.pii_info?.detected;
-      deepLink = `${TRUSTGUARD_URL}/?verify=${data.verify_id}`;
+      const pii    = data.analysis?.pii_info?.detected;
+      deepLink     = `${TRUSTGUARD_URL}/?verify=${data.verify_id}`;
 
       btn.classList.remove("loading");
       if (halluc) {
@@ -307,12 +307,12 @@ setTimeout(injectButtons, 5000);
 // Proper regexes — not just @ + dot
 const EMAIL_RE = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/;
 const PHONE_RE = /(\+91[\s\-]?)?[6-9]\d{9}|(\+\d{1,3}[\s\-]?)?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}/;
-const CARD_RE = /\b(?:\d[ \-]?){13,16}\b/;
-const SSN_RE = /\b\d{3}[- ]\d{2}[- ]\d{4}\b/;
+const CARD_RE  = /\b(?:\d[ \-]?){13,16}\b/;
+const SSN_RE   = /\b\d{3}[- ]\d{2}[- ]\d{4}\b/;
 
 function hasPII(text) {
   return EMAIL_RE.test(text) || PHONE_RE.test(text) ||
-    CARD_RE.test(text) || SSN_RE.test(text);
+         CARD_RE.test(text)  || SSN_RE.test(text);
 }
 
 function getActiveInputText() {
@@ -329,7 +329,7 @@ function getActiveInputText() {
     try {
       const el = document.querySelector(sel);
       if (el && document.activeElement === el) return el.value || el.innerText || "";
-    } catch (_) { }
+    } catch (_) {}
   }
   const active = document.activeElement;
   if (active && (active.isContentEditable || active.tagName === "TEXTAREA")) {
@@ -342,17 +342,17 @@ let scanTimer = null;
 let lastPiiState = false;
 
 document.addEventListener("input", () => {
-  const text = getActiveInputText();
+  const text   = getActiveInputText();
   const active = document.activeElement;
-  const isPii = hasPII(text);
+  const isPii  = hasPII(text);
 
   if (isPii !== lastPiiState) {
     lastPiiState = isPii;
     if (isPii) {
-      try { if (active) active.style.outline = "2px solid #e04b3a"; } catch (_) { }
+      try { if (active) active.style.outline = "2px solid #e04b3a"; } catch (_) {}
       setBadge("pii", "🔒 Sensitive data detected in input");
     } else {
-      try { if (active) active.style.outline = ""; } catch (_) { }
+      try { if (active) active.style.outline = ""; } catch (_) {}
       setBadge("safe", "✅ Input cleared");
     }
   }
@@ -361,7 +361,7 @@ document.addEventListener("input", () => {
   scanTimer = setTimeout(async () => {
     if (!text.trim() || text.trim().length < 4) return;
     try {
-      const res = await fetch(SCAN_URL, {
+      const res  = await fetch(SCAN_URL, {
         method: "POST",
         headers: authHeaders(),
         body: JSON.stringify({
@@ -374,9 +374,9 @@ document.addEventListener("input", () => {
       if (data.pii_detected && !isPii) {
         // Backend found PII that local regex missed
         setBadge("pii", "🔒 Backend: sensitive data detected");
-        try { if (active) active.style.outline = "2px solid #e04b3a"; } catch (_) { }
+        try { if (active) active.style.outline = "2px solid #e04b3a"; } catch (_) {}
       }
-    } catch (_) { } // silent — input scanning is best-effort
+    } catch (_) {} // silent — input scanning is best-effort
   }, 1200);
 }, true);
 

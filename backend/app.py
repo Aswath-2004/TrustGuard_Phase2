@@ -44,11 +44,29 @@ ENCRYPTION_KEY  = os.getenv("ENCRYPTION_KEY")
 SECRET_KEY      = os.getenv("SECRET_KEY", "trustguard-secret-2025")
 
 app = Flask(__name__)
-ALLOWED_ORIGINS = [
-    "https://trustguard.vercel.app",
-    "https://trust-guard-phase2.vercel.app",
+
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Reads FRONTEND_URL from env var.  For multiple origins, separate with commas:
+#   FRONTEND_URL=https://trust-guard-phase2.vercel.app,https://trustguard.vercel.app
+# Falls back to allowing both known Vercel deployments + localhost for dev.
+_raw_origins = os.getenv("FRONTEND_URL", "")
+if _raw_origins and _raw_origins != "*":
+    # Support comma-separated list e.g.  URL1,URL2
+    _allowed = [o.strip().rstrip("/") for o in _raw_origins.split(",") if o.strip()]
+else:
+    # Default: allow both known Vercel URLs so either deployment works
+    _allowed = []
+
+ALLOWED_ORIGINS = _allowed + [
+    "https://trust-guard-phase2.vercel.app",  # actual deployed frontend
+    "https://trustguard.vercel.app",           # alternate / future URL
+    "http://localhost:5173",                   # Vite dev server
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
 ]
-CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}},
+
+CORS(app,
+     resources={r"/*": {"origins": ALLOWED_ORIGINS}},
      supports_credentials=True,
      allow_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
@@ -59,19 +77,7 @@ CORS(app, resources={r"/*": {"origins": ALLOWED_ORIGINS}},
 # ============================================================
 db = None
 if not firebase_admin._apps:
-    # Try env var first (production), then fall back to file (development)
-    _fb_creds_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
-    if _fb_creds_json:
-        try:
-            import json as _json
-            _creds_dict = _json.loads(_fb_creds_json)
-            cred = credentials.Certificate(_creds_dict)
-            firebase_admin.initialize_app(cred)
-            db = firestore.client()
-            print("🔥 Firebase connected via env var!")
-        except Exception as e:
-            print(f"⚠️ Firebase env var error: {e}")
-    elif os.path.exists("firebase_credentials.json"):
+    if os.path.exists("firebase_credentials.json"):
         try:
             cred = credentials.Certificate("firebase_credentials.json")
             firebase_admin.initialize_app(cred)
@@ -80,7 +86,7 @@ if not firebase_admin._apps:
         except Exception as e:
             print(f"⚠️ Firebase error: {e}")
     else:
-        print("⚠️ No Firebase credentials — in-memory mode.")
+        print("⚠️ firebase_credentials.json not found — in-memory mode.")
 
 
 # ============================================================
@@ -176,12 +182,29 @@ def encrypt_data(text: str) -> str:
 
 
 def decrypt_data(maybe_enc: str) -> str:
+    """
+    Attempt to decrypt a string if it looks like Fernet ciphertext.
+
+    Key design decisions:
+    - Always tries decryption if cipher_suite exists, even if the
+      is_encryption_on() setting is currently False. This handles the
+      case where messages were encrypted with a previous config and
+      the setting was later toggled off.
+    - If decryption fails (plaintext, different key, corrupt data),
+      silently returns the original value as-is.
+    - If cipher_suite is None (no ENCRYPTION_KEY set), returns as-is.
+    """
     if maybe_enc is None:
         return maybe_enc
     if maybe_enc == "":
         return ""
+    # No key available — return as-is (will show plaintext correctly,
+    # or raw ciphertext if data was encrypted with a different instance)
     if not cipher_suite:
         return maybe_enc
+    # Always attempt decryption — Fernet ciphertext always starts with "gAAAAA"
+    # If maybe_enc is already plaintext, decrypt() will raise InvalidToken
+    # and we fall through to returning the original value
     try:
         return cipher_suite.decrypt(maybe_enc.encode()).decode()
     except (InvalidToken, Exception):
@@ -404,7 +427,7 @@ PRIVATE_TYPES = {
 }
 
 provider   = NlpEngineProvider(nlp_configuration={
-    'nlp_engine_name':'spacy','models':[{'lang_code':'en','model_name':'en_core_web_sm'}]
+    'nlp_engine_name':'spacy','models':[{'lang_code':'en','model_name':'en_core_web_lg'}]
 })
 nlp_engine = provider.create_engine()
 analyzer   = AnalyzerEngine(nlp_engine=nlp_engine, supported_languages=["en"])
@@ -952,8 +975,10 @@ def internal_chat():
 # ============================================================
 # ANALYZE  — user-aware
 # ============================================================
-@app.route('/analyze', methods=['POST'])
+@app.route('/analyze', methods=['POST', 'OPTIONS'])
 def analyze():
+    if request.method == 'OPTIONS':
+        return '', 204
     ip = request.remote_addr
     if is_rate_limited(ip):
         return jsonify({"error": "Rate limited"}), 429
@@ -1852,7 +1877,9 @@ Correction/Refinement: [Corrected version or N/A]
     }
 
     # Deep-link: http://localhost:3000/?verify=<uuid>  (or wherever the app runs)
-    deep_link = f"https://trust-guard-phase2.vercel.app/?verify={verify_id}"
+    # Use FRONTEND_URL env var so deep-links work in production
+    _frontend = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+    deep_link = f"{_frontend}/?verify={verify_id}"
 
     print(f"✅ /verify done: pii={results['pii_info']['detected']} "
           f"hallucination={results['hallucination_info']['detected']} "
@@ -1954,22 +1981,14 @@ def scan_text():
 
     return jsonify({"pii_detected": detected, "entities": real_pii})
 
-@app.route("/")
-def home():
-    return "TrustGuard API is running 🚀"
 
 # ============================================================
 if __name__ == '__main__':
+    # In production (Render), use the PORT env var and bind to 0.0.0.0
+    # In development, fall back to port 5000 on localhost
+    port  = int(os.getenv("PORT", 5000))
+    debug = os.getenv("FLASK_ENV", "production") == "development"
     print("=" * 60)
-    print("  TrustGuard Backend v2.7.0")
-    print("  • Per-user Firestore storage: users/{uid}/chat_history")
-    print("  •                             users/{uid}/scan_logs")
-    print("  •                             users/{uid}/meta/stats")
-    print("  • Authorization: Bearer <token> required for user context")
-    print("  • Per-session chat storage: users/{uid}/chat_sessions/{sid}")
-    print("  • Routes: /api/chat/sessions, /api/chat/session/<id>")
-    print("  • Personalization: /api/personalization (GET/POST)")
-    print("  • Token verify: /api/auth/token-verify (GET) — for extension")
-    print("  • Admin password: howyoudoin")
+    print(f"  TrustGuard Backend v2.9.0  |  port={port}  debug={debug}")
     print("=" * 60)
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=debug)
