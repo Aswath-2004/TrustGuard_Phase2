@@ -51,8 +51,16 @@ app = Flask(__name__)
 # flask_cors configuration issue can block the frontend.
 
 ALLOWED_ORIGINS = [
+    # ── TrustGuard frontends ──────────────────────────────────
     "https://trust-guard-phase2.vercel.app",
     "https://trustguard.vercel.app",
+    # ── AI platforms the Chrome extension runs on ─────────────
+    # The extension makes fetch() calls FROM these origins TO Render
+    "https://chatgpt.com",
+    "https://chat.openai.com",
+    "https://gemini.google.com",
+    "https://claude.ai",
+    # ── Local development ─────────────────────────────────────
     "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
